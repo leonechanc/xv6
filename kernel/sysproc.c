@@ -5,6 +5,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -91,3 +92,32 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// sys_trace
+uint64
+sys_trace(void) {
+  int mask;
+
+  argint(0, &mask);
+  myproc()->mask = mask;
+  return 0;
+}
+
+// sys_sysinfo
+// addr is a user virtual address
+uint64 sys_sysinfo(void) {
+  struct sysinfo si;
+  uint64 addr;
+  struct proc *p = myproc();
+
+  argaddr(0, &addr);
+  // si->freemem = getFreeMemory();
+  si.freemem = getFreeMemory();
+  si.nproc = getNumProc();
+  if(copyout(p->pagetable, addr, (char *)&si, sizeof(si)) < 0) {
+    return -1;
+  }
+
+  return 0;
+}
+

@@ -1,0 +1,6 @@
+usertrap()
+7
+usermode
+s2
+virtual address 0x0 can't be mapped to any physical address
+1 = "initcode\000\000\000\000\000\000\000" 2 = 1
