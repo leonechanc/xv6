@@ -1,0 +1,5 @@
+Speed up system calls:
+    those system calls to get struct proc fields. Because there's no need to lock when visiting these members. They can be mapped into read-only pages just like usyscall.
+
+Print a page table:
+    if a PTE points to a lower-level page table, it definitely ends with 0x01. if a PTE is a leaf, it should have some other bits like read, write and etc.

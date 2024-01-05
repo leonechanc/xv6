@@ -74,10 +74,46 @@ sys_sleep(void)
 int
 sys_pgaccess(void)
 {
+  uint64 start_va;
+  int num_pages;
+  uint64 mask_addr;
+
+  uint buffer = 0;
+  pte_t *pte;
+  pagetable_t pagetable = myproc()->pagetable;
+
+  // get parameters
+  argaddr(0, &start_va);
+  argint(1, &num_pages);
+  argaddr(2, &mask_addr);
+
+  // if((va % PGSIZE) != 0) {
+  //   return -1;
+  // }
+  if (num_pages > MAXSCAN) {
+    return -1;
+  }
+
+  for (int i = 0; i < num_pages; i++) {
+    if ((pte = walk(pagetable, start_va, 0)) == 0) {
+      return -1;
+    }
+    if (*pte & PTE_A) {
+      buffer |= (1 << i);
+      *pte &= ~PTE_A;
+    }
+    start_va += PGSIZE;
+  }
+
+  if (copyout(pagetable, mask_addr, (char *)&buffer, sizeof(buffer)) == -1) {
+    return -1;
+  }
+
   // lab pgtbl: your code here.
   return 0;
 }
 #endif
+
 
 uint64
 sys_kill(void)
