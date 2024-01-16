@@ -1,0 +1,7 @@
+RISV-V assembly:
+    1. a0~a7, if there're more arguments they would be store in the stack. a2 holds the value of 13.
+    2. 0x26, due to the compiler optimization the call of f and g was compiled as one line.
+    3. 0x64a
+    4. 0x38
+    5. the output is "HE110 World". if RISC-V is big-endian should set i = 0x00726c64. don't need to change 57616 to another value because it will be parse as a value.
+    6. print 3 and 1. y would be the value in a2, it's just a garbage value.
