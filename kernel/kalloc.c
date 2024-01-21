@@ -9,10 +9,16 @@
 #include "riscv.h"
 #include "defs.h"
 
+#define REFCOUNT (PHYSTOP - KERNBASE)/PGSIZE
+#define REFINDEX(pa) ref_arry[((uint64)pa - KERNBASE)/PGSIZE]
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
+
+int ref_arry[REFCOUNT];
+struct spinlock ref_lock;
 
 struct run {
   struct run *next;
@@ -27,6 +33,7 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&ref_lock, "ref_lock");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -35,8 +42,12 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
     kfree(p);
+    // acquire(&ref_lock);
+    REFINDEX(p) = 0;
+    // release(&ref_lock);
+  }
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -50,16 +61,21 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+  acquire(&ref_lock);
+  REFINDEX(pa)--;
+  if (REFINDEX(pa) <= 0) {
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
+    r = (struct run*)pa;
 
-  r = (struct run*)pa;
+    acquire(&kmem.lock);
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+    release(&kmem.lock);
+  }
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  release(&ref_lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -76,7 +92,29 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
+  if(r) {
     memset((char*)r, 5, PGSIZE); // fill with junk
+    // acquire(&ref_lock);
+    REFINDEX(r) = 1;
+    // release(&ref_lock);
+  }
+
   return (void*)r;
+}
+
+void
+ref_increment(uint64 pa) {
+  acquire(&ref_lock);
+  REFINDEX(pa)++;
+  release(&ref_lock);
+}
+
+uint64 get_end(void) {
+  return (uint64)end;
+}
+
+void get_ref(uint64 pa, int *ref) {
+  acquire(&ref_lock);
+  *ref = REFINDEX(pa);
+  release(&ref_lock);
 }

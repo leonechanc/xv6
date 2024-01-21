@@ -67,6 +67,25 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause() == 15 || r_scause() == 13) { // cow only leads to Store/AMO page fault
+    uint64 va = r_stval();
+    if (va < MAXVA) {
+      if (is_cow(p->pagetable, va)) {
+        if (cow_handler(p->pagetable, va) != 0) {
+          printf("usertrap(): can't handle Store/AMO page fault\n");
+          p->killed = 1;
+        }
+      } else {
+        p->killed = 1;
+      }
+    } else {
+      p->killed = 1;
+    }
+
+    // if (va < PGSIZE) {
+    //   printf("usertrap(): too low address\n");
+    //   p->killed = 1;
+    // }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());

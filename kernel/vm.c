@@ -315,22 +315,32 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    
     pa = PTE2PA(*pte);
+    // in case illegal address access, those 
+    // addresses are read-only should not be 
+    // set COW bit
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    if (flags & PTE_W) {
+      flags = (flags | PTE_COW) & (~PTE_W);
+      *pte = PA2PTE(pa) | flags;
+    }
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      // kfree(mem);
+      printf("umvcopy failed\n");
       goto err;
     }
+    ref_increment(pa);
   }
   return 0;
 
@@ -363,8 +373,16 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    if(va0 >= MAXVA)
+    if (va0 < MAXVA) { // attention! neccessary condition statement
+      if (is_cow(pagetable, va0)) {
+        if (cow_handler(pagetable, va0) != 0) {
+          return -1;
+        }
+      }
+    } else {
       return -1;
+    }
+
     pte = walk(pagetable, va0, 0);
     if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
        (*pte & PTE_W) == 0)
@@ -448,4 +466,68 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// if va belongs to a copy on write page 
+// returns 1
+int
+is_cow(pagetable_t pgtbl, uint64 va) {
+  pte_t *pte;
+
+  // if (va >= MAXVA) {
+  //   return 0;
+  // }
+
+  pte = walk(pgtbl, va, 0);
+  if (pte == 0) {
+    // panic("is_cow: pte should exist");
+    return 0;
+  }
+
+  if ((*pte & PTE_V) == 0) {
+    // panic("is_cow: page not present");
+    return 0;
+  }
+
+  if ((*pte & PTE_U) == 0) {
+    // panic("is_cow: not user space address");
+    return 0;
+  }
+
+  if ((*pte & PTE_COW) == 0) {
+    return 0;
+  }
+
+  return 1;
+}
+
+// handle address from cow page
+int
+cow_handler(pagetable_t pgtbl, uint64 va) {
+  uint64 pa;
+  pte_t *pte;
+  uint flags;
+  char *mem;
+  int ref;
+  
+  pte = walk(pgtbl, va, 0);
+  pa = PTE2PA(*pte);
+  get_ref(pa, &ref);
+  flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
+
+  if (ref == 1) {
+    *pte = (*pte | PTE_W) & (~PTE_COW); 
+  } else {
+    if ((mem = kalloc()) == 0) {
+      return -1;
+    }
+    memmove((void *)mem, (void *)pa, PGSIZE);
+    uvmunmap(pgtbl, PGROUNDDOWN(va), 1, 1);
+    if ((mappages(pgtbl, PGROUNDDOWN(va), PGSIZE, (uint64)mem, flags)) != 0) {
+      kfree(mem);
+      return -1;
+    }
+  }
+  
+  return 0;
 }
