@@ -1,0 +1,1 @@
+1. When there's only 1 thread, it won't be any problem when you insert any entry in the front of the hash table list; When there's more than a thread, race-condition will occurs in the insert operation. 
