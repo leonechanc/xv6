@@ -86,6 +86,7 @@ bget(uint dev, uint blockno)
 
   uint key = hash(dev, blockno);
 
+  // find buffer cahce in the key bucket
   acquire(&bcache.buck[key].lock);
   b = bcache.buck[key].head.next;
   while (b) {
@@ -97,16 +98,19 @@ bget(uint dev, uint blockno)
     }
     b = b->next;
   }
+  // not cached
   release(&bcache.buck[key].lock);
 
+  // serialize finding an unused buf
+  acquire(&bcache.eviction_lock); 
   // when we've released the lock above, it's possible that there's an identical 
   // blockno cache buffer before we get key bucket lock again. so we need to make sure there's no
-  // other cpu get into the eviction. serialize finding an unused buf
-  acquire(&bcache.eviction_lock); 
+  // other cpu get into the eviction. 
   b = bcache.buck[key].head.next;
   while (b) {
     if (b->dev == dev && b->blockno == blockno) {
-      acquire(&bcache.buck[key].lock);
+      // it's obvious that it'll be no other eviction operations for we've got eviction lock
+      acquire(&bcache.buck[key].lock); 
       b->refcnt++;
       release(&bcache.buck[key].lock);
       release(&bcache.eviction_lock);
@@ -115,13 +119,15 @@ bget(uint dev, uint blockno)
     }
     b = b->next;
   }
-  // steal from the other bucket
+  // still no cached, steal from the other bucket
   struct buf *prelru = 0;
   int nbucket = -1;
   uint find;
   for (int i = 0; i < NBUCK; i++) {
     find = 0;
-    acquire(&bcache.buck[i].lock);
+    // it will be no dead lock because we follow the rule that acquiring the 
+    // second lock only after the bucket lock 
+    acquire(&bcache.buck[i].lock); 
     b = &bcache.buck[i].head;
     while (b->next) {
       if (b->next->refcnt == 0 && (!prelru || (b->next->timestamp < prelru->next->timestamp))) {
@@ -132,11 +138,11 @@ bget(uint dev, uint blockno)
     }
     if (find) {
       if (nbucket != -1) {
-        release(&bcache.buck[nbucket].lock);
+        release(&bcache.buck[nbucket].lock); // if find, release the previous held lock
       }
       nbucket = i; 
     } else {
-      release(&bcache.buck[i].lock);
+      release(&bcache.buck[i].lock); // if not find, release the current iteration lock
     }
   }
   if (prelru == 0) {
@@ -144,7 +150,7 @@ bget(uint dev, uint blockno)
   }
   struct buf *curlru = prelru->next;
   prelru->next = curlru->next;
-  release(&bcache.buck[nbucket].lock);
+  release(&bcache.buck[nbucket].lock); // here can be optimized
 
   curlru->dev = dev;
   curlru->blockno = blockno;
