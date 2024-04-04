@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -308,6 +309,14 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // copy parent's vma
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vma[i].used) {
+      memmove(&np->vma[i], &p->vma[i], sizeof(struct vma));
+      filedup(p->vma[i].f);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -340,6 +349,8 @@ reparent(struct proc *p)
   }
 }
 
+int munmap_writeback(struct vma *vma, pagetable_t pagetable, uint64 addr, int len);
+
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state
 // until its parent calls wait().
@@ -357,6 +368,26 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+  // ummap all the file
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vma[i].used) {
+      if ((p->vma[i].flags & MAP_SHARED) && (p->vma[i].prot & PROT_WRITE)) {
+        if (munmap_writeback(&p->vma[i], p->pagetable, 
+            p->vma[i].addr, p->vma[i].len) != 0) 
+        {
+          panic("exit: munmap_writeback fail");
+        }
+      }
+      if (munmap_memory(p->pagetable, &p->vma[i].addr, 
+          &p->vma[i].len, p->vma[i].addr, p->vma[i].len) != 0) 
+      {
+        panic("exit: munmap_memory fail");
+      }
+      p->vma[i].len = 0;
+      fileclose(p->vma[i].f);
+      p->vma[i].used = 0;
     }
   }
 
@@ -685,4 +716,34 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// mmap write back
+// Return 0 on success, -1 on error.
+int munmap_writeback(struct vma *vma, pagetable_t pagetable, uint64 addr, int len) {
+  uint64 pa;
+  uint off;
+  pte_t *pte;
+
+  for (uint64 a = PGROUNDDOWN(addr); a < PGROUNDUP(addr + len); a += PGSIZE) {
+    if ((pte = walk(pagetable, a, 0)) == 0) {
+      return -1;
+    }
+    if (!(*pte & PTE_V)) {
+      continue; // lazy allocation
+    }
+    pa = PTE2PA(*pte);
+    off = PGROUNDDOWN(a - vma->addr);
+    // if (off > vma->f->ip->size) { // in case out of range
+    //   break;
+    // }
+    begin_op();
+    if (mmap_write(vma->f, pa, off) != 0) {
+      return -1;
+    }
+    end_op();
+    *pte |= PTE_D;
+  }
+
+  return 0;
 }

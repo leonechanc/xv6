@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -28,6 +29,8 @@ trapinithart(void)
 {
   w_stvec((uint64)kernelvec);
 }
+
+int mmap_handler(struct vma *vma, uint64 addr);
 
 //
 // handle an interrupt, exception, or system call from user space.
@@ -65,6 +68,32 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 13 || r_scause() == 15) {
+    uint64 addr = r_stval();
+    int n = -1;
+    // find vma corresponding to the addr
+    for (int i = 0; i < NVMA; i++) {
+      if (p->vma[i].used) {
+        if (addr >= p->vma[i].addr && addr < p->vma[i].addr + p->vma[i].len) {
+          n = i;
+          break;
+        }
+      }
+    }
+    if (n == -1) {
+      // panic("usertrap: fail to find addr corresponding vma");
+      setkilled(p); // for usertests
+      exit(-1);
+    }
+    
+    if (r_scause() == 13 && !(p->vma[n].prot & PROT_READ))
+      panic("usertrap: mmap handler unreadable");
+    if (r_scause() == 15 && !(p->vma[n].prot & PROT_WRITE))
+      panic("usertrap: mmap handler unwritable");
+    
+    if (mmap_handler(&p->vma[n], addr) != 0) {
+      panic("usertrap: mmap map memory and read file fail");
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -219,3 +248,32 @@ devintr()
   }
 }
 
+// mmap trap handler
+// Return 0 on success, -1 on error.
+int mmap_handler(struct vma *vma, uint64 addr) {
+  uint64 pa = (uint64)kalloc();
+  if (pa == 0) {
+    return -1;
+  }
+  uint off = PGROUNDDOWN(addr - vma->addr);
+  memset((void *)pa, 0, PGSIZE);
+  if (mmap_read(vma->f, pa, off) == 0) { // read from file
+    printf("mmap_read\n");
+    return -1;
+  }
+
+  int perm = PTE_V | PTE_U | PTE_W; // for file read
+  if (vma->prot & PROT_READ)
+    perm |= PTE_R;
+  if (vma->prot & PROT_WRITE)
+    perm |= PTE_W;
+  if (vma->prot & PROT_EXEC)
+    perm |= PTE_X;
+  if (mappages(myproc()->pagetable, PGROUNDDOWN(addr), PGSIZE, pa, perm) != 0) {
+    kfree((void *)pa);
+    printf("mmap_read\n");
+    return -1;
+  }
+
+  return 0;
+}

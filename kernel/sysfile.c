@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -501,5 +502,201 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_mmap(void) {
+  uint64 addr;
+  int len, prot, flags, off;
+  struct file *file;
+  struct proc *p = myproc();
+
+  argaddr(0, &addr);
+  argint(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  if(argfd(4, 0, &file) < 0)
+    return -1;
+  argint(5, &off);
+  
+  if (addr || off)
+    return -1;
+  if (prot & PROT_READ && !file->readable)
+    return -1;
+  // private can be write even file is not writable
+  if (((prot & PROT_WRITE) && (flags & MAP_SHARED)) && !file->writable)
+    return -1;
+
+  // vma list addr sort
+  for (int i = 0; i < NVMA - 1; i++) {
+    if (p->vma[i].used) {
+      for (int j = i + 1; j < NVMA; j++) {
+        if (p->vma[j].used) {
+          if (p->vma[i].addr > p->vma[j].addr) {
+            struct vma temp;
+            memmove(&temp, &p->vma[i], sizeof(struct vma));
+            memmove(&p->vma[i], &p->vma[j], sizeof(struct vma));
+            memmove(&p->vma[j], &temp, sizeof(struct vma));
+          }
+        }
+      }
+    }
+  }
+  // find out if there is a vacancy big enough in the vma
+  uint64 low_addr = TRAPFRAME;
+  int max_vacancy = 0;
+  uint64 between = 0;
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vma[i].used) {
+      if (p->vma[i].addr < low_addr) {
+        low_addr = p->vma[i].addr;
+      }
+      if (i == NVMA - 1) {
+        if (TRAPFRAME - PGROUNDUP(p->vma[i].addr + p->vma[i].len) > max_vacancy) {
+          max_vacancy = TRAPFRAME - PGROUNDUP(p->vma[i].addr + p->vma[i].len);
+          between = i;
+          break;
+        }
+      }
+      int j = i + 1;
+      while (j < NVMA) {
+        if (p->vma[j].used)
+          break;
+        j++;
+      }
+      if (PGROUNDDOWN(p->vma[j].addr) - PGROUNDUP(p->vma[i].addr + p->vma[i].len) > max_vacancy) {
+        max_vacancy = PGROUNDDOWN(p->vma[j].addr) - PGROUNDUP(p->vma[i].addr + p->vma[i].len);
+        between = i;
+      }
+    }
+  }
+  for (int i = 0; i < NVMA; i++) {
+    if (!p->vma[i].used) {
+      p->vma[i].used = 1;
+      if (max_vacancy > len) {
+        p->vma[i].addr = PGROUNDUP(p->vma[between].addr + len);
+      } else {
+        p->vma[i].addr = PGROUNDDOWN(PGROUNDDOWN(low_addr) - len);
+      }
+      p->vma[i].len = len;
+      p->vma[i].flags = flags;
+      p->vma[i].prot = prot;
+      p->vma[i].f = file;
+      filedup(file);
+      return p->vma[i].addr;
+    }
+    // if (i == NVMA - 1) 
+    //   return -1;
+  }
+  return -1;
+}
+
+uint64
+sys_munmap(void) {
+  uint64 addr;
+  int len;
+  struct proc *p = myproc();
+  int n = -1;
+  struct vma *vma;
+  pte_t *pte;
+
+  argaddr(0, &addr);
+  argint(1, &len);
+
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vma[i].used) {
+      if (addr >= p->vma[i].addr && addr < (p->vma[i].addr + p->vma[i].len)) {
+        n = i;
+        break;
+      }
+    }
+  }
+  if (n == -1) {
+    return -1;
+  }
+  vma = &p->vma[n];
+  // don't dig a hole
+  if (addr != vma->addr && addr + len != (vma->addr + vma->len)) {
+    return -1;
+  }
+  // write back file
+  if ((vma->flags & MAP_SHARED) && (vma->prot & PROT_WRITE)) {
+    uint64 pa;
+    uint off;
+    for (uint64 a = PGROUNDDOWN(addr); a < PGROUNDUP(addr + len); a += PGSIZE) {
+      if ((pte = walk(p->pagetable, a, 0)) == 0) {
+        return -1;
+      }
+      if (!(*pte & PTE_V)) {
+        continue; // lazy allocation
+      }
+      pa = PTE2PA(*pte);
+      off = PGROUNDDOWN(a - vma->addr);
+      if (off > vma->f->ip->size) { // in case out of range
+        break;
+      }
+      begin_op();
+      ilock(vma->f->ip);
+      if (writei(vma->f->ip, 0, pa, off, PGSIZE) < 0) {
+        iunlock(vma->f->ip);
+        end_op();
+      }
+      iunlock(vma->f->ip);
+      end_op();
+      *pte |= PTE_D;
+    }
+  }
+
+  // when you munmap and exit, if the content of mmap need to be 
+  // writen to the file, it should have the right offset to write
+  // into.
+  if (addr == vma->addr) {
+    vma->f->off += PGROUNDDOWN(addr + len); 
+  }
+
+  // ummap address
+  // uint release_size;
+  // uint64 start_addr;
+  // if (addr == vma->addr) {
+  //   start_addr = PGROUNDDOWN(addr);
+  //   if ((addr + len) == (vma->addr + vma->len)) {
+  //     release_size = PGROUNDUP(addr + len) - PGROUNDDOWN(addr);
+  //   } else {
+  //     release_size = PGROUNDDOWN(addr + len) - PGROUNDDOWN(addr);
+  //   }
+  //   for (uint64 a = start_addr; a < start_addr + release_size; a += PGSIZE) {
+  //     if ((pte = walk(p->pagetable, a, 0)) == 0) {
+  //       return -1;
+  //     }
+  //     if (!(*pte & PTE_V)) {
+  //       continue; // not actually mapped, don't uvmunmap
+  //     }
+  //     uvmunmap(p->pagetable, a, 1, 1);
+  //   }
+  //   vma->addr += len;
+  // } else {
+  //   start_addr = PGROUNDUP(addr);
+  //   release_size = PGROUNDUP(addr + len) - PGROUNDUP(addr);
+  //   for (uint64 a = start_addr; a < start_addr + release_size; a += PGSIZE) {
+  //     if ((pte = walk(p->pagetable, a, 0)) == 0) {
+  //       return -1;
+  //     }
+  //     if (!(*pte & PTE_V)) {
+  //       continue; // not actually mapped, don't uvmunmap
+  //     }
+  //     uvmunmap(p->pagetable, a, 1, 1);
+  //   };
+  // }
+  if (munmap_memory(p->pagetable, &vma->addr, &vma->len, addr, len) != 0) {
+    return -1;
+  }
+  
+  vma->len -= len;
+  if (vma->len == 0) {
+    fileclose(p->vma[n].f);
+    vma->used = 0;
+  }
+
   return 0;
 }

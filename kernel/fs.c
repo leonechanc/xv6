@@ -695,3 +695,35 @@ nameiparent(char *path, char *name)
 {
   return namex(path, 1, name);
 }
+
+// mmap read from file
+// Return 0 on success, -1 on error.
+int mmap_read(struct file *file, uint64 dst, uint off) {
+  struct inode *ip = file->ip;
+  ilock(ip);
+  if (readi(ip, 0, dst, off, PGSIZE) != 0) {
+    iunlock(ip);
+    return -1;
+  }
+  iunlock(ip);
+
+  return 0;
+}
+
+// mmap write to file
+// Return 0 on success, -1 on error.
+int mmap_write(struct file *file, uint64 src, uint off) {
+  struct inode *ip = file->ip;
+
+  if (off > ip->size) {
+    return 0;
+  }
+  ilock(ip);
+  if (writei(ip, 0, src, file->off + off, PGSIZE) < 0) {
+    iunlock(ip);
+    return -1;
+  }
+  iunlock(ip);
+  
+  return 0;
+}

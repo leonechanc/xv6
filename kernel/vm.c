@@ -449,3 +449,60 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+// // mmap memory allocate
+// // Return 0 on success, -1 on error.
+// int mmaplloc(pagetable_t pagetable, uint64 addr, int perm) {
+//   // allocate page for mmap space
+//   uint64 pa = (uint64)kalloc();
+//   if (pa == 0) {
+//     return -1;
+//   }
+//   memset((void *)pa, 0, PGSIZE);
+//   if (mappages(pagetable, addr, PGSIZE, pa, perm) != 0) {
+//     kfree((void *)pa);
+//     return -1;
+//   }
+//   return 0;
+// }
+
+// munmap memory
+//  Return 0 on success, -1 on error.
+int munmap_memory(pagetable_t pagetable, uint64 *vma_addr, const uint* vma_len, uint64 addr, int len) {
+  pte_t *pte;
+  uint release_size;
+  uint64 start_addr;
+
+  if (addr == *vma_addr) {
+    start_addr = PGROUNDDOWN(addr);
+    if ((addr + len) == (*vma_addr + *vma_len)) {
+      release_size = PGROUNDUP(addr + len) - PGROUNDDOWN(addr);
+    } else {
+      release_size = PGROUNDDOWN(addr + len) - PGROUNDDOWN(addr);
+    }
+    for (uint64 a = start_addr; a < start_addr + release_size; a += PGSIZE) {
+      if ((pte = walk(pagetable, a, 0)) == 0) {
+        return -1;
+      }
+      if (!(*pte & PTE_V)) {
+        continue; // not actually mapped, don't uvmunmap
+      }
+      uvmunmap(pagetable, a, 1, 1);
+    }
+    *vma_addr += len;
+  } else {
+    start_addr = PGROUNDUP(addr);
+    release_size = PGROUNDUP(addr + len) - PGROUNDUP(addr);
+    for (uint64 a = start_addr; a < start_addr + release_size; a += PGSIZE) {
+      if ((pte = walk(pagetable, a, 0)) == 0) {
+        return -1;
+      }
+      if (!(*pte & PTE_V)) {
+        continue; // not actually mapped, don't uvmunmap
+      }
+      uvmunmap(pagetable, a, 1, 1);
+    };
+  }
+
+  return 0;
+}
