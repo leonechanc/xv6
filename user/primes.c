@@ -52,6 +52,8 @@ int main(void) {
     pid = fork();
 
     if (pid < 0) {
+        close(pipefd[PIPE_READ]);
+        close(pipefd[PIPE_WRITE]);
         fprintf(2, "fork err.\n");
     } else if (pid == 0) {
         concurrent_prime_sieve(pipefd);
