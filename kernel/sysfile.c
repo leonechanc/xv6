@@ -317,7 +317,7 @@ sys_symlink(void) {
     return -1;
   }
 
-  // ilock(ip);
+  // ilock(ip); create() has hold ip->lock
   if (writei(ip, 0, (uint64)target, 0, MAXPATH) < MAXPATH) {
     iunlockput(ip);
     end_op();
